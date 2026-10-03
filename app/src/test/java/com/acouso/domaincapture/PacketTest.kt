@@ -68,6 +68,23 @@ class PacketTest {
         assertEquals(0x14, rst[33].toInt())
     }
 
+    @Test fun recordsAnsweringDnsServerPerDomain() {
+        CaptureState.reset("com.netflix.ninja", "Netflix")
+        CaptureState.recordQuery("www.netflix.com", 1)
+        CaptureState.recordResponse("192.168.1.1", false, DnsCodec.parse(response, 0, response.size))
+        CaptureState.recordDnsFailure("8.8.8.8", true)
+
+        assertEquals(setOf("192.168.1.1"), CaptureState.domains["www.netflix.com"]!!.dnsServers)
+        assertEquals(setOf("192.168.1.1"), CaptureState.domains["dradis.netflix.com"]!!.dnsServers)
+        val router = CaptureState.dnsServers["192.168.1.1"]!!
+        assertEquals(1, router.answered.get())
+        assertEquals(setOf("www.netflix.com", "dradis.netflix.com"), router.domains)
+        assertEquals(setOf(DnsServerStat.VIA_SYSTEM), router.via)
+        assertEquals(1, CaptureState.dnsServers["8.8.8.8"]!!.failed.get())
+        assertEquals("red local (router)", ReportWriter.describeDnsServer("192.168.1.1"))
+        assertEquals("Google (público)", ReportWriter.describeDnsServer("8.8.8.8"))
+    }
+
     @Test fun baseDomain() {
         assertEquals("nflxso.net", ReportWriter.baseDomain("occ-0-1.1.nflxso.net"))
         assertEquals("bbc.co.uk", ReportWriter.baseDomain("a.b.bbc.co.uk"))

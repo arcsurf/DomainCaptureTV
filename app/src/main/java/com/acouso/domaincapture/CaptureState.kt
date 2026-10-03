@@ -12,6 +12,21 @@ class DomainEntry(val name: String, val firstSeen: Long) {
     val cnameTo: MutableSet<String> = ConcurrentHashMap.newKeySet()
     /** Este dominio apareció como destino CNAME de... */
     val aliasOf: MutableSet<String> = ConcurrentHashMap.newKeySet()
+    /** IPs de los servidores DNS que respondieron por este dominio. */
+    val dnsServers: MutableSet<String> = ConcurrentHashMap.newKeySet()
+}
+
+class DnsServerStat(val ip: String) {
+    val answered = AtomicInteger(0)
+    val failed = AtomicInteger(0)
+    /** Cómo llegó la consulta: VIA_SYSTEM (DNS asignado por la VPN) o VIA_DIRECT (la app eligió este servidor). */
+    val via: MutableSet<String> = ConcurrentHashMap.newKeySet()
+    val domains: MutableSet<String> = ConcurrentHashMap.newKeySet()
+
+    companion object {
+        const val VIA_SYSTEM = "sistema"
+        const val VIA_DIRECT = "directo"
+    }
 }
 
 /** Estado compartido entre el servicio VPN y la UI (mismo proceso). */
@@ -26,9 +41,13 @@ object CaptureState {
     @Volatile var autoStopActive = false
     val totalQueries = AtomicInteger(0)
     val domains = ConcurrentHashMap<String, DomainEntry>()
+    val dnsServers = ConcurrentHashMap<String, DnsServerStat>()
+    /** DNS configurados en la red activa (router/ISP) al iniciar la captura. */
+    @Volatile var networkDns: List<String> = emptyList()
 
     fun reset(pkg: String, label: String) {
         domains.clear()
+        dnsServers.clear()
         totalQueries.set(0)
         targetPackage = pkg
         targetLabel = label
@@ -51,6 +70,27 @@ object CaptureState {
             queries.incrementAndGet()
             types += DnsCodec.typeName(type)
         }
+    }
+
+    private fun server(ip: String, direct: Boolean) = dnsServers.computeIfAbsent(ip) { DnsServerStat(it) }
+        .also { it.via += if (direct) DnsServerStat.VIA_DIRECT else DnsServerStat.VIA_SYSTEM }
+
+    /** Respuesta recibida de [serverIp]: asocia el servidor a los dominios preguntados y respondidos. */
+    fun recordResponse(serverIp: String, direct: Boolean, msg: DnsMessage?) {
+        val stat = server(serverIp, direct)
+        stat.answered.incrementAndGet()
+        if (msg == null) return
+        msg.answers.forEach(::recordAnswer)
+        val names = msg.questions.map { it.first } + msg.answers.map { it.name } +
+            msg.answers.filter { it.type == DnsCodec.TYPE_CNAME }.map { it.data }
+        names.filterNot(::ignored).toSet().forEach { name ->
+            domains[name]?.dnsServers?.add(serverIp)
+            stat.domains += name
+        }
+    }
+
+    fun recordDnsFailure(serverIp: String, direct: Boolean) {
+        server(serverIp, direct).failed.incrementAndGet()
     }
 
     fun recordAnswer(answer: DnsAnswer) {

@@ -95,8 +95,10 @@ class CaptureVpnService : VpnService() {
 
     private fun startCapture(pkg: String, label: String, autoStop: Boolean) {
         if (running) return
-        upstreams = detectUpstreamDns()
+        val networkDns = detectNetworkDns()
+        upstreams = (networkDns + listOf(InetAddress.getByName("8.8.8.8"), InetAddress.getByName("1.1.1.1"))).distinct()
         CaptureState.reset(pkg, label.ifEmpty { pkg })
+        CaptureState.networkDns = networkDns.mapNotNull { it.hostAddress }
 
         val builder = Builder()
             .setSession("Domain Capture: ${label.ifEmpty { pkg }}")
@@ -212,8 +214,10 @@ class CaptureVpnService : VpnService() {
 
     private fun forwardDns(src: ByteArray, dst: ByteArray, srcPort: Int, query: ByteArray) {
         val dstAddr = InetAddress.getByAddress(dst)
-        val targets = if (dstAddr == fakeDns) upstreams else listOf(dstAddr)
+        val direct = dstAddr != fakeDns
+        val targets = if (direct) listOf(dstAddr) else upstreams
         for (server in targets) {
+            val serverIp = server.hostAddress ?: continue
             try {
                 DatagramSocket().use { sock ->
                     protect(sock)
@@ -222,12 +226,13 @@ class CaptureVpnService : VpnService() {
                     val resp = ByteArray(4096)
                     val pkt = DatagramPacket(resp, resp.size)
                     sock.receive(pkt)
-                    DnsCodec.parse(resp, 0, pkt.length)?.answers?.forEach(CaptureState::recordAnswer)
+                    CaptureState.recordResponse(serverIp, direct, DnsCodec.parse(resp, 0, pkt.length))
                     writeTun(IpPacket.buildUdp(dst, src, 53, srcPort, resp, pkt.length))
                 }
                 return
             } catch (e: Exception) {
                 if (!running) return
+                CaptureState.recordDnsFailure(serverIp, direct)
             }
         }
     }
@@ -239,13 +244,13 @@ class CaptureVpnService : VpnService() {
         }
     }
 
-    private fun detectUpstreamDns(): List<InetAddress> {
+    /** DNS IPv4 de la red activa (normalmente el router o el ISP). */
+    private fun detectNetworkDns(): List<InetAddress> {
         val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
-        val found = try {
+        return try {
             cm.activeNetwork?.let { cm.getLinkProperties(it)?.dnsServers }.orEmpty()
                 .filter { it is Inet4Address && it != fakeDns }
         } catch (e: Exception) { emptyList() }
-        return (found + listOf(InetAddress.getByName("8.8.8.8"), InetAddress.getByName("1.1.1.1"))).distinct()
     }
 
     // ---------------------------------------------------------------- detección de cierre de la app

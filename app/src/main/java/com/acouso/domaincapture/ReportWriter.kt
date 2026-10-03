@@ -6,6 +6,7 @@ import android.os.Build
 import android.os.Environment
 import android.provider.MediaStore
 import java.io.File
+import java.net.InetAddress
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -20,6 +21,30 @@ object ReportWriter {
     private val tsShort = SimpleDateFormat("HH:mm:ss", Locale.US)
 
     private val SECOND_LEVEL = setOf("co", "com", "net", "org", "gov", "edu", "ac", "gob", "mil")
+
+    private val KNOWN_DNS = mapOf(
+        "8.8.8.8" to "Google", "8.8.4.4" to "Google",
+        "1.1.1.1" to "Cloudflare", "1.0.0.1" to "Cloudflare",
+        "9.9.9.9" to "Quad9", "149.112.112.112" to "Quad9",
+        "208.67.222.222" to "OpenDNS", "208.67.220.220" to "OpenDNS",
+    )
+
+    /** Describe un servidor DNS: "Google (público)", "red local (router)", "DNS de la red / ISP". */
+    fun describeDnsServer(ip: String): String {
+        KNOWN_DNS[ip]?.let { return "$it (público)" }
+        val addr = try { InetAddress.getByName(ip) } catch (e: Exception) { null }
+        val local = addr != null && (addr.isSiteLocalAddress || addr.isLinkLocalAddress || addr.isLoopbackAddress)
+        val network = ip in CaptureState.networkDns
+        return when {
+            local -> "red local (router)"
+            network -> "DNS de la red / ISP"
+            else -> "otro"
+        }
+    }
+
+    private fun viaText(via: Set<String>): String = via.sorted().joinToString(" + ") {
+        if (it == DnsServerStat.VIA_DIRECT) "la app lo consultó directamente" else "DNS del sistema (reenviado por la VPN)"
+    }
 
     /** Aproximación a eTLD+1: "occ-0-123.1.nflxso.net" -> "nflxso.net", "x.bbc.co.uk" -> "bbc.co.uk". */
     fun baseDomain(name: String): String {
@@ -58,6 +83,25 @@ object ReportWriter {
         appendLine("Duración        : %02d:%02d:%02d".format(dur / 3600, dur / 60 % 60, dur % 60))
         appendLine("Consultas DNS   : ${CaptureState.totalQueries.get()}")
         appendLine("Dominios únicos : ${entries.size}")
+        appendLine("DNS de la red   : ${CaptureState.networkDns.joinToString(", ").ifEmpty { "no detectado (se usaron 8.8.8.8 / 1.1.1.1)" }}")
+        appendLine()
+
+        val servers = CaptureState.dnsServers.values.sortedByDescending { it.answered.get() }
+        appendLine("== SERVIDORES DNS CONSULTADOS (${servers.size}) ==")
+        appendLine("%-16s %-24s %10s %6s %9s  %s".format("IP", "tipo", "respuestas", "fallos", "dominios", "cómo llegó la consulta"))
+        servers.forEach { s ->
+            appendLine("%-16s %-24s %10d %6d %9d  %s".format(
+                s.ip, describeDnsServer(s.ip), s.answered.get(), s.failed.get(), s.domains.size, viaText(s.via),
+            ))
+        }
+        if (servers.any { describeDnsServer(it.ip) == "red local (router)" }) {
+            appendLine("Nota: el router reenvía a su propio DNS (ISP u otro); ese salto no es visible desde el TV.")
+        }
+        appendLine()
+        servers.filter { it.domains.isNotEmpty() }.forEach { s ->
+            appendLine("-- ${s.ip} resolvió ${s.domains.size} dominios:")
+            s.domains.sorted().forEach { appendLine("   $it") }
+        }
         appendLine()
 
         appendLine("== LISTA DE DOMINIOS (${entries.size}) ==")
@@ -81,12 +125,13 @@ object ReportWriter {
             if (e.cnameTo.isNotEmpty()) appendLine("   CNAME -> ${e.cnameTo.sorted().joinToString(", ")}")
             if (e.aliasOf.isNotEmpty()) appendLine("   alias de: ${e.aliasOf.sorted().joinToString(", ")}")
             if (e.ips.isNotEmpty()) appendLine("   IPs: ${e.ips.sorted().joinToString(", ")}")
+            if (e.dnsServers.isNotEmpty()) appendLine("   resuelto por DNS: ${e.dnsServers.sorted().joinToString(", ")}")
         }
     }
 
     private fun buildCsv(entries: List<DomainEntry>): String = buildString {
         fun q(s: String) = "\"" + s.replace("\"", "\"\"") + "\""
-        appendLine("dominio,dominio_base,origen,consultas,primera_vez,ultima_vez,tipos,ips,cname_destino,alias_de")
+        appendLine("dominio,dominio_base,origen,consultas,primera_vez,ultima_vez,tipos,ips,cname_destino,alias_de,servidores_dns")
         entries.forEach { e ->
             appendLine(
                 listOf(
@@ -100,6 +145,7 @@ object ReportWriter {
                     e.ips.sorted().joinToString(" "),
                     e.cnameTo.sorted().joinToString(" "),
                     e.aliasOf.sorted().joinToString(" "),
+                    e.dnsServers.sorted().joinToString(" "),
                 ).joinToString(",") { q(it) }
             )
         }

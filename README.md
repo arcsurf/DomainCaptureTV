@@ -23,7 +23,7 @@ No necesita root.
 - Usa `VpnService` con `addAllowedApplication()`: **solo la app elegida** pasa por la VPN; el resto del TV no se toca.
 - La VPN tiene únicamente rutas `/32` hacia el DNS ficticio y hacia resolvers públicos conocidos (8.8.8.8, 1.1.1.1, 9.9.9.9, OpenDNS). El tráfico de video va directo, sin pérdida de velocidad.
 - Si la app intenta DNS-over-TLS / DNS-over-HTTPS / DNS por TCP contra esos resolvers, recibe un TCP RST inmediato y vuelve al DNS clásico, que queda capturado.
-- Por cada dominio guarda: cantidad de consultas, tipos (A/AAAA/HTTPS…), primera/última vez, **cadena CNAME** (ej. `www.netflix.com → *.dradis.netflix.com`) e **IPs resueltas**.
+- Por cada dominio guarda: cantidad de consultas, tipos (A/AAAA/HTTPS…), primera/última vez, **cadena CNAME** (ej. `www.netflix.com → *.dradis.netflix.com`), **IPs resueltas** y **qué servidor DNS respondió** (router, ISP o un resolver público que la app consultó directamente).
 - **Auto-detención**: con el permiso *Acceso a datos de uso*, la app detecta cuando la app objetivo deja de estar en primer plano (volviste al launcher o abriste otra app) durante más de 8 s, detiene la captura y guarda el reporte sola.
 
 ## Uso
@@ -46,8 +46,8 @@ Se guarda en `/sdcard/Download/DomainCapture/`:
 
 | Archivo | Contenido |
 |---|---|
-| `dominios_<App>_<fecha>.txt` | Resumen, **lista de dominios**, agrupación por dominio base (ej. `nflxvideo.net: 23 subdominios`) y detalle con CNAME/IPs |
-| `dominios_<App>_<fecha>.csv` | `dominio, dominio_base, origen, consultas, primera_vez, ultima_vez, tipos, ips, cname_destino, alias_de` |
+| `dominios_<App>_<fecha>.txt` | Resumen, **servidores DNS consultados** (IP, tipo, respuestas, fallos, dominios que resolvió cada uno), **lista de dominios**, agrupación por dominio base (ej. `nflxvideo.net: 23 subdominios`) y detalle con CNAME/IPs |
+| `dominios_<App>_<fecha>.csv` | `dominio, dominio_base, origen, consultas, primera_vez, ultima_vez, tipos, ips, cname_destino, alias_de, servidores_dns` |
 
 Para bajarlo a la PC:
 ```bash
