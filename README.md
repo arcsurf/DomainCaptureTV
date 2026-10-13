@@ -1,96 +1,98 @@
 # Domain Capture TV
 
-App para **Android TV** que captura los **dominios** que usa otra app (Netflix, Disney+, Prime Video, YouTube…) para llegar a su contenido, y genera un **reporte descargable** (TXT + CSV) en la carpeta `Download/DomainCapture` del TV.
+**English** | [Español](README.es.md)
 
-No necesita root.
+An **Android TV** app that captures the **domains** another app (Netflix, Disney+, Prime Video, YouTube…) uses to reach its content, and generates a **downloadable report** (TXT + CSV) in the TV's `Download/DomainCapture` folder.
 
-## Cómo funciona
+No root required.
+
+## How it works
 
 ```
- App objetivo (p.ej. Netflix)
-        │  consulta DNS
+ Target app (e.g. Netflix)
+        │  DNS query
         ▼
  ┌──────────────────────────────┐
- │ VPN local (solo esa app)     │  DNS ficticio 10.111.222.1
- │  - registra el dominio       │──► DNS real del router/ISP (socket protegido)
- │  - registra CNAME e IPs      │◄── respuesta
+ │ Local VPN (that app only)    │  Fake DNS 10.111.222.1
+ │  - logs the domain           │──► Real router/ISP DNS (protected socket)
+ │  - logs CNAMEs and IPs       │◄── response
  └──────────────────────────────┘
-        │ el resto del tráfico (video, API) NO pasa por la VPN
+        │ all other traffic (video, API) does NOT go through the VPN
         ▼
-     Internet normal
+     Regular Internet
 ```
 
-- Usa `VpnService` con `addAllowedApplication()`: **solo la app elegida** pasa por la VPN; el resto del TV no se toca.
-- La VPN tiene únicamente rutas `/32` hacia el DNS ficticio y hacia resolvers públicos conocidos (8.8.8.8, 1.1.1.1, 9.9.9.9, OpenDNS). El tráfico de video va directo, sin pérdida de velocidad.
-- Si la app intenta DNS-over-TLS / DNS-over-HTTPS / DNS por TCP contra esos resolvers, recibe un TCP RST inmediato y vuelve al DNS clásico, que queda capturado.
-- Por cada dominio guarda: cantidad de consultas, tipos (A/AAAA/HTTPS…), primera/última vez, **cadena CNAME** (ej. `www.netflix.com → *.dradis.netflix.com`), **IPs resueltas** y **qué servidor DNS respondió** (router, ISP o un resolver público que la app consultó directamente).
-- **Auto-detención**: con el permiso *Acceso a datos de uso*, la app detecta cuando la app objetivo deja de estar en primer plano (volviste al launcher o abriste otra app) durante más de 8 s, detiene la captura y guarda el reporte sola.
+- Uses `VpnService` with `addAllowedApplication()`: **only the selected app** goes through the VPN; the rest of the TV is untouched.
+- The VPN only has `/32` routes to the fake DNS and to well-known public resolvers (8.8.8.8, 1.1.1.1, 9.9.9.9, OpenDNS). Video traffic goes direct, with no speed loss.
+- If the app tries DNS-over-TLS / DNS-over-HTTPS / DNS over TCP against those resolvers, it gets an immediate TCP RST and falls back to classic DNS, which gets captured.
+- For each domain it stores: query count, record types (A/AAAA/HTTPS…), first/last seen, **CNAME chain** (e.g. `www.netflix.com → *.dradis.netflix.com`), **resolved IPs** and **which DNS server answered** (router, ISP, or a public resolver the app queried directly).
+- **Auto-stop**: with the *Usage access* permission, the app detects when the target app leaves the foreground (you went back to the launcher or opened another app) for more than 8 s, then stops the capture and saves the report on its own.
 
-## Uso
+## Usage
 
-1. Instalar el APK (ver abajo).
-2. Abrir **Domain Capture TV**.
-3. *(Una sola vez)* conceder **Acceso a datos de uso** con el botón "Permiso datos de uso". Si tu TV no tiene esa pantalla, desde una PC:
+1. Install the APK (see below).
+2. Open **Domain Capture TV**.
+3. *(One time only)* grant **Usage access** with the "Permiso datos de uso" button. If your TV doesn't have that screen, from a PC:
    ```bash
    adb shell appops set com.acouso.domaincapture GET_USAGE_STATS allow
    ```
-4. Elegir la app en la lista de la izquierda.
-5. *(Recomendado)* "Info app (forzar detención)" → **Forzar detención** de la app objetivo, para que no reutilice conexiones abiertas antes de la captura.
-6. **Iniciar captura y abrir app** → aceptar el diálogo de VPN (la primera vez) → la app objetivo se abre sola.
-7. Usar la app normalmente (navegar, reproducir contenido).
-8. Salir de la app (botón Home/Atrás). A los ~8 s la captura se detiene y se guarda el reporte. También se puede detener a mano desde la app o desde la notificación ("Detener y guardar").
+4. Pick the app from the list on the left.
+5. *(Recommended)* "Info app (forzar detención)" → **Force stop** the target app, so it doesn't reuse connections opened before the capture.
+6. **Iniciar captura y abrir app** (start capture and open app) → accept the VPN dialog (first time) → the target app opens automatically.
+7. Use the app normally (browse, play content).
+8. Leave the app (Home/Back button). After ~8 s the capture stops and the report is saved. You can also stop it manually from the app or from the notification ("Detener y guardar").
 
-## Reporte
+## Report
 
-Se guarda en `/sdcard/Download/DomainCapture/`:
+Saved to `/sdcard/Download/DomainCapture/`:
 
-| Archivo | Contenido |
+| File | Contents |
 |---|---|
-| `dominios_<App>_<fecha>.txt` | Resumen, **servidores DNS consultados** (IP, tipo, respuestas, fallos, dominios que resolvió cada uno), **lista de dominios**, agrupación por dominio base (ej. `nflxvideo.net: 23 subdominios`) y detalle con CNAME/IPs |
-| `dominios_<App>_<fecha>.csv` | `dominio, dominio_base, origen, consultas, primera_vez, ultima_vez, tipos, ips, cname_destino, alias_de, servidores_dns` |
+| `dominios_<App>_<date>.txt` | Summary, **DNS servers queried** (IP, type, responses, failures, domains each one resolved), **domain list**, grouping by base domain (e.g. `nflxvideo.net: 23 subdominios`) and details with CNAMEs/IPs |
+| `dominios_<App>_<date>.csv` | `dominio, dominio_base, origen, consultas, primera_vez, ultima_vez, tipos, ips, cname_destino, alias_de, servidores_dns` |
 
-Para bajarlo a la PC:
+To copy it to a PC:
 ```bash
 adb pull /sdcard/Download/DomainCapture/ .
 ```
-(o con cualquier explorador de archivos del TV / X-plore / Send Files to TV).
+(or with any file explorer on the TV / X-plore / Send Files to TV).
 
-Si el sistema no permitiera escribir en Download, el reporte cae en `/sdcard/Android/data/com.acouso.domaincapture/files/DomainCapture/`.
+If the system doesn't allow writing to Download, the report is saved to `/sdcard/Android/data/com.acouso.domaincapture/files/DomainCapture/`.
 
-## Instalación
+## Installation
 
-Descargar `DomainCaptureTV.apk` desde **Releases** y:
+Download `DomainCaptureTV.apk` from **Releases** and:
 ```bash
-adb connect <IP_DEL_TV>:5555          # con "Depuración por red/USB" activada en el TV
+adb connect <TV_IP>:5555          # with "Network/USB debugging" enabled on the TV
 adb install -r DomainCaptureTV.apk
 ```
 
-## Compilar
+## Building
 
-Requisitos: JDK 17+ y Android SDK (platform 35).
+Requirements: JDK 17+ and Android SDK (platform 35).
 ```bash
 echo "sdk.dir=$HOME/Android/Sdk" > local.properties
 ./gradlew testDebugUnitTest assembleRelease
 # APK: app/build/outputs/apk/release/app-release.apk
 ```
 
-## Limitaciones
+## Limitations
 
-- Solo ve lo que la app resuelve por **DNS**. Si una app usa IPs fijas o DoH contra un servidor propio (no los resolvers públicos bloqueados), esos destinos no aparecen.
-- Si en el TV está activado **DNS privado** en modo estricto (hostname), conviene desactivarlo durante la captura.
-- Solo puede haber una VPN activa en el sistema: si usás otra VPN, se desconecta mientras capturás.
-- IPv4 para el DNS interceptado; el tráfico IPv6 de la app sigue por la red normal (sus consultas DNS igualmente pasan por la VPN).
-- Requiere Android 7.0+ (API 24).
+- It only sees what the app resolves via **DNS**. If an app uses hardcoded IPs or DoH against its own server (not the blocked public resolvers), those destinations won't show up.
+- If **Private DNS** is enabled in strict mode (hostname) on the TV, it's best to disable it during the capture.
+- Only one VPN can be active on the system: if you use another VPN, it will be disconnected while capturing.
+- IPv4 only for intercepted DNS; the app's IPv6 traffic goes through the regular network (its DNS queries still go through the VPN).
+- Requires Android 7.0+ (API 24).
 
-## Estructura
+## Structure
 
 ```
 app/src/main/java/com/acouso/domaincapture/
-├── MainActivity.kt        UI para control remoto (lista de apps, iniciar/detener, dominios en vivo)
-├── CaptureVpnService.kt   VPN solo-DNS por app, reenvío DNS, RST a DoT/DoH, auto-detención
-├── DnsCodec.kt            Parser DNS (preguntas, A, AAAA, CNAME, compresión)
-├── IpPacket.kt            Construcción de paquetes IPv4/UDP y TCP RST con checksums
-├── CaptureState.kt        Estado compartido: dominios, IPs, CNAME
-├── ReportWriter.kt        Genera TXT + CSV en Download/DomainCapture
-└── UsageAccess.kt         Verificación del permiso de datos de uso
+├── MainActivity.kt        Remote-control UI (app list, start/stop, live domains)
+├── CaptureVpnService.kt   Per-app DNS-only VPN, DNS forwarding, RST for DoT/DoH, auto-stop
+├── DnsCodec.kt            DNS parser (questions, A, AAAA, CNAME, compression)
+├── IpPacket.kt            IPv4/UDP and TCP RST packet building with checksums
+├── CaptureState.kt        Shared state: domains, IPs, CNAMEs
+├── ReportWriter.kt        Writes TXT + CSV to Download/DomainCapture
+└── UsageAccess.kt         Usage access permission check
 ```
