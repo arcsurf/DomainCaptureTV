@@ -48,8 +48,18 @@ Saved to `/sdcard/Download/DomainCapture/`:
 
 | File | Contents |
 |---|---|
-| `dominios_<App>_<date>.txt` | Summary, **DNS servers queried** (IP, type, responses, failures, domains each one resolved), **domain list**, grouping by base domain (e.g. `nflxvideo.net: 23 subdominios`) and details with CNAMEs/IPs |
-| `dominios_<App>_<date>.csv` | `dominio, dominio_base, origen, consultas, primera_vez, ultima_vez, tipos, ips, cname_destino, alias_de, servidores_dns` |
+| `dominios_<App>_<date>.txt` | Summary, **DNS servers queried** (IP, type, responses, failures, domains each one resolved), **domain list**, grouping by base domain (e.g. `nflxvideo.net: 23 subdominios`), **network blocks / CDN** (ASN, holder, BGP prefixes) with the minimal and full CIDR lists, and details with CNAMEs/IPs/networks |
+| `dominios_<App>_<date>.csv` | `dominio, dominio_base, origen, consultas, primera_vez, ultima_vez, tipos, ips, cname_destino, alias_de, servidores_dns, redes` |
+| `redes_<App>_<date>.txt` | **Full CIDR list**, one block per line (IPv4 first, then IPv6), ready to import into a VPN/router policy: every prefix originated by each CDN ASN seen, losslessly summarized |
+| `redes_<App>_<date>_min.txt` | **Minimal CIDR list**: only the BGP prefixes that contain the IPs seen in this capture, summarized |
+
+### Network blocks (CIDR)
+
+When the capture stops, each resolved public IP is looked up in [RIPEstat](https://stat.ripe.net) (RIPE RIS BGP data): IP → announced prefix + origin ASN → all prefixes originated by that ASN → lossless summarization (covered blocks removed, contiguous halves merged, e.g. `45.57.40.0/24 + 45.57.41.0/24 → 45.57.40.0/23`).
+
+- If the ASN belongs to **your own ISP** (CDN caches embedded in the ISP: Netflix OCA, Google GGC, Akamai…), the ASN is not expanded — that would be the ISP's whole network; `/24` (IPv4) or `/64` (IPv6) per IP is used instead.
+- Without Internet access to RIPEstat, each IP is widened to `/24` or `/48`.
+- Apps hosted on general-purpose clouds (AWS, Google, Azure) pull in **all** of that cloud's prefixes in the full list (thousands of blocks); use the minimal list if you only want what was actually seen.
 
 To copy it to a PC:
 ```bash
@@ -93,6 +103,7 @@ app/src/main/java/com/acouso/domaincapture/
 ├── DnsCodec.kt            DNS parser (questions, A, AAAA, CNAME, compression)
 ├── IpPacket.kt            IPv4/UDP and TCP RST packet building with checksums
 ├── CaptureState.kt        Shared state: domains, IPs, CNAMEs
-├── ReportWriter.kt        Writes TXT + CSV to Download/DomainCapture
+├── NetBlocks.kt           CIDR math/summarization, IP → prefix/ASN lookup via RIPEstat
+├── ReportWriter.kt        Writes TXT + CSV + CIDR lists to Download/DomainCapture
 └── UsageAccess.kt         Usage access permission check
 ```

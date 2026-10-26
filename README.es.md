@@ -48,8 +48,18 @@ Se guarda en `/sdcard/Download/DomainCapture/`:
 
 | Archivo | Contenido |
 |---|---|
-| `dominios_<App>_<fecha>.txt` | Resumen, **servidores DNS consultados** (IP, tipo, respuestas, fallos, dominios que resolvió cada uno), **lista de dominios**, agrupación por dominio base (ej. `nflxvideo.net: 23 subdominios`) y detalle con CNAME/IPs |
-| `dominios_<App>_<fecha>.csv` | `dominio, dominio_base, origen, consultas, primera_vez, ultima_vez, tipos, ips, cname_destino, alias_de, servidores_dns` |
+| `dominios_<App>_<fecha>.txt` | Resumen, **servidores DNS consultados** (IP, tipo, respuestas, fallos, dominios que resolvió cada uno), **lista de dominios**, agrupación por dominio base (ej. `nflxvideo.net: 23 subdominios`), **bloques de red / CDN** (ASN, titular, prefijos BGP) con las listas CIDR mínima y completa, y detalle con CNAME/IPs/redes |
+| `dominios_<App>_<fecha>.csv` | `dominio, dominio_base, origen, consultas, primera_vez, ultima_vez, tipos, ips, cname_destino, alias_de, servidores_dns, redes` |
+| `redes_<App>_<fecha>.txt` | **Lista CIDR completa**, un bloque por línea (IPv4 primero, luego IPv6), lista para importar en la VPN / política del router: todos los prefijos que origina cada ASN de CDN visto, sumarizados sin pérdida |
+| `redes_<App>_<fecha>_min.txt` | **Lista CIDR mínima**: solo los prefijos BGP que contienen las IPs vistas en esta captura, sumarizados |
+
+### Bloques de red (CIDR)
+
+Al detener la captura, cada IP pública resuelta se consulta en [RIPEstat](https://stat.ripe.net) (datos BGP de RIPE RIS): IP → prefijo anunciado + ASN de origen → todos los prefijos que origina ese ASN → sumarización sin pérdida (se quitan bloques contenidos y se unen mitades contiguas, ej. `45.57.40.0/24 + 45.57.41.0/24 → 45.57.40.0/23`).
+
+- Si el ASN es el de **tu propio ISP** (cachés del CDN dentro del proveedor: Netflix OCA, Google GGC, Akamai…), no se expande el ASN (sería toda la red del ISP); se usa `/24` (IPv4) o `/64` (IPv6) por IP.
+- Sin acceso a RIPEstat, cada IP se amplía a `/24` o `/48`.
+- Las apps alojadas en nubes genéricas (AWS, Google, Azure) suman **todos** los prefijos de esa nube a la lista completa (miles de bloques); usá la lista mínima si solo querés lo efectivamente visto.
 
 Para bajarlo a la PC:
 ```bash
@@ -93,6 +103,7 @@ app/src/main/java/com/acouso/domaincapture/
 ├── DnsCodec.kt            Parser DNS (preguntas, A, AAAA, CNAME, compresión)
 ├── IpPacket.kt            Construcción de paquetes IPv4/UDP y TCP RST con checksums
 ├── CaptureState.kt        Estado compartido: dominios, IPs, CNAME
-├── ReportWriter.kt        Genera TXT + CSV en Download/DomainCapture
+├── NetBlocks.kt           Cálculo/sumarización CIDR, consulta IP → prefijo/ASN en RIPEstat
+├── ReportWriter.kt        Genera TXT + CSV + listas CIDR en Download/DomainCapture
 └── UsageAccess.kt         Verificación del permiso de datos de uso
 ```

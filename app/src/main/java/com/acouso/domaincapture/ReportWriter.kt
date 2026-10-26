@@ -4,6 +4,7 @@ import android.content.ContentValues
 import android.content.Context
 import android.os.Build
 import android.os.Environment
+import android.os.Looper
 import android.provider.MediaStore
 import java.io.File
 import java.net.InetAddress
@@ -65,15 +66,68 @@ object ReportWriter {
         val safe = label.replace(Regex("[^A-Za-z0-9._-]+"), "_").trim('_').ifEmpty { "app" }
         val base = "dominios_${safe}_${tsFile.format(Date(start))}"
 
-        val txt = buildTxt(entries, label, start, end)
-        val csv = buildCsv(entries)
+        // Las consultas a RIPEstat no pueden ir en el hilo principal (p.ej. al destruirse el servicio)
+        val online = Looper.myLooper() != Looper.getMainLooper()
+        val net = NetBlocks.build(entries, online) { CaptureState.status = "Analizando redes: $it" }
+        val nets = "redes_${safe}_${tsFile.format(Date(start))}"
+
+        val txt = buildTxt(entries, label, start, end, net, nets)
+        val csv = buildCsv(entries, net)
 
         val dir = save(ctx, "$base.txt", "text/plain", txt)
         save(ctx, "$base.csv", "text/csv", csv)
-        return "$dir/$base.txt (+ .csv)"
+        save(ctx, "$nets.txt", "text/plain", cidrList(net.full))
+        save(ctx, "${nets}_min.txt", "text/plain", cidrList(net.minimal))
+        return "$dir/$base.txt (+ .csv, $nets.txt)"
     }
 
-    private fun buildTxt(entries: List<DomainEntry>, label: String, start: Long, end: Long): String = buildString {
+    /** Un bloque CIDR por línea, IPv4 primero; listo para importar en la VPN / router. */
+    private fun cidrList(blocks: List<Cidr>) = blocks.joinToString("") { "$it\n" }
+
+    private fun countText(blocks: List<Cidr>) = "${blocks.size} bloques (${blocks.count { !it.v6 }} IPv4, ${blocks.count { it.v6 }} IPv6)"
+
+    private fun StringBuilder.appendNetBlocks(net: NetReport, nets: String) {
+        appendLine("== BLOQUES DE RED / CDN ==")
+        if (!net.online) {
+            appendLine("Sin consulta a RIPEstat: cada IP se amplió a /${NetBlocks.FALLBACK_V4} (IPv4) o /${NetBlocks.FALLBACK_V6} (IPv6).")
+        } else {
+            appendLine("Fuente: RIPEstat (tablas BGP de RIPE RIS). IP pública del TV: ${net.publicIp ?: "?"}" +
+                if (net.ispAsns.isNotEmpty()) " (ISP: ${net.ispAsns.joinToString { "AS$it" }})" else "")
+            appendLine("%-9s %-40s %5s %9s %9s %10s".format("ASN", "titular", "IPs", "dominios", "prefijos", "total ASN"))
+            net.asns.forEach { a ->
+                appendLine("%-9s %-40s %5d %9d %9d %10s".format(
+                    "AS${a.asn}", a.holder.take(40), a.ips.size, a.domains.size, a.seenPrefixes.size,
+                    when { a.isIsp -> "ISP" ; a.allPrefixes == null -> "error"; else -> a.allPrefixes!!.size.toString() },
+                ))
+            }
+            if (net.asns.any { it.isIsp }) {
+                appendLine("Nota: \"ISP\" = caché del CDN alojada en tu proveedor (Netflix OCA, Google GGC, Akamai…).")
+                appendLine("      No se expande todo el ASN (sería la red entera del ISP); se usa /24 o /64 por IP.")
+            }
+            appendLine()
+            net.asns.forEach { a ->
+                appendLine("-- AS${a.asn} ${a.holder}")
+                appendLine("   dominios: ${a.domains.joinToString(", ")}")
+                appendLine("   prefijos con IPs observadas: ${a.seenPrefixes.joinToString(", ")}")
+            }
+            if (net.unresolved.isNotEmpty()) {
+                appendLine("-- Sin prefijo BGP conocido (se usa /${NetBlocks.FALLBACK_V4} o /${NetBlocks.FALLBACK_V6}): ${net.unresolved.joinToString(", ")}")
+            }
+            net.errors.forEach { appendLine("!! $it") }
+        }
+        appendLine()
+        appendLine("== LISTA MÍNIMA DE BLOQUES CIDR (${countText(net.minimal)}) ==")
+        appendLine("Prefijos que contienen las IPs vistas en esta captura, sumarizados. Archivo: ${nets}_min.txt")
+        net.minimal.forEach { appendLine(it.toString()) }
+        appendLine()
+        appendLine("== LISTA COMPLETA DE BLOQUES CIDR (${countText(net.full)}) ==")
+        appendLine("Mínima + todos los prefijos de cada ASN de CDN (IPs que la app podría usar en otra sesión).")
+        appendLine("Archivo: $nets.txt")
+        net.full.forEach { appendLine(it.toString()) }
+        appendLine()
+    }
+
+    private fun buildTxt(entries: List<DomainEntry>, label: String, start: Long, end: Long, net: NetReport, nets: String): String = buildString {
         val dur = (end - start) / 1000
         appendLine("REPORTE DE DOMINIOS - Domain Capture TV")
         appendLine("=".repeat(60))
@@ -116,6 +170,8 @@ object ReportWriter {
         }
         appendLine()
 
+        appendNetBlocks(net, nets)
+
         appendLine("== DETALLE ==")
         entries.forEach { e ->
             appendLine(e.name)
@@ -125,13 +181,20 @@ object ReportWriter {
             if (e.cnameTo.isNotEmpty()) appendLine("   CNAME -> ${e.cnameTo.sorted().joinToString(", ")}")
             if (e.aliasOf.isNotEmpty()) appendLine("   alias de: ${e.aliasOf.sorted().joinToString(", ")}")
             if (e.ips.isNotEmpty()) appendLine("   IPs: ${e.ips.sorted().joinToString(", ")}")
+            networksOf(e, net).takeIf { it.isNotEmpty() }?.let { appendLine("   redes: ${it.joinToString(", ")}") }
             if (e.dnsServers.isNotEmpty()) appendLine("   resuelto por DNS: ${e.dnsServers.sorted().joinToString(", ")}")
         }
     }
 
-    private fun buildCsv(entries: List<DomainEntry>): String = buildString {
+    /** Prefijos (con ASN) de las IPs de un dominio: "45.57.40.0/24 AS40027". */
+    private fun networksOf(e: DomainEntry, net: NetReport): List<String> =
+        e.ips.mapNotNull(Cidr::parse).filter(Cidr::isPublic).map { ip ->
+            net.byIp[ip]?.let { (p, asns) -> "$p ${asns.joinToString("/") { "AS$it" }}" } ?: NetBlocks.fallbackBlock(ip).toString()
+        }.distinct().sorted()
+
+    private fun buildCsv(entries: List<DomainEntry>, net: NetReport): String = buildString {
         fun q(s: String) = "\"" + s.replace("\"", "\"\"") + "\""
-        appendLine("dominio,dominio_base,origen,consultas,primera_vez,ultima_vez,tipos,ips,cname_destino,alias_de,servidores_dns")
+        appendLine("dominio,dominio_base,origen,consultas,primera_vez,ultima_vez,tipos,ips,cname_destino,alias_de,servidores_dns,redes")
         entries.forEach { e ->
             appendLine(
                 listOf(
@@ -146,6 +209,7 @@ object ReportWriter {
                     e.cnameTo.sorted().joinToString(" "),
                     e.aliasOf.sorted().joinToString(" "),
                     e.dnsServers.sorted().joinToString(" "),
+                    networksOf(e, net).joinToString(" | "),
                 ).joinToString(",") { q(it) }
             )
         }
